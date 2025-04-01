@@ -6,6 +6,7 @@ sys.path.append('..')
 
 # Load personal schema and populate settings
 from dj_schemas.bvs import BVField, BVScore
+from dj_schemas.shuffling_bvs import ShuffledBVS 
 from populate_settings import now, settings
 
 dj.config['loglevel'] = 'DEBUG'
@@ -19,6 +20,10 @@ def main():
         print('############ BVScore ############')
         print('{} | BVScore.populate()'.format(now()))
         BVScore.populate(**settings)
+
+        print('############ ShuffledBVS ############')
+        print('{} | ShuffledBVS.populate()'.format(now()))
+        ShuffledBVS.populate(**settings)
 
         time.sleep(5)
 

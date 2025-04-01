@@ -10,7 +10,7 @@ schema = dj.schema(dj.config['dj_imaging.database'])
 schema.spawn_missing_classes()
 
 # Load personal schema 
-borderscore_schema = dj.schema('user_horsto_borderscore')
+borderscore_schema = dj.schema('user_martipof_im')
 # Schema components
 from dj_schemas.bvs import BVFieldParams, BVScoreParams, BVScoreFieldMethod
 
@@ -24,7 +24,7 @@ from helpers.utils import find_nearest, calc_signal_dict, calc_ratemap
 class ShuffledBVS(dj.Computed):
     definition = """
     # Shuffling table for boundary vector score (BVS)
-    -> FilteredSpikes.proj(signal_dataset = 'dataset_name')
+    -> FilteredEvents.proj(signal_dataset = 'dataset_name')
     -> Tracking.OpenField.proj(tracking_dataset = 'dataset_name')
     -> ShuffleParams
     -> SignalTrackingParams
@@ -35,7 +35,7 @@ class ShuffledBVS(dj.Computed):
     ---
     -> [nullable] Sync.proj(sync_dataset_frames_imaging = 'dataset_name', sync_name_frames_imaging  = 'sync_name')
     number_shuffles            :  int            # Total number of shuffles (can vary from expected number)
-    shuffling_offsets          :  blob@imgstore  # Shuffling offsets
+    shuffling_offsets          :  blob@imaging_store  # Shuffling offsets
     """
 
     class BVS(dj.Part):
@@ -45,7 +45,7 @@ class ShuffledBVS(dj.Computed):
         --- 
         bvs_99                 :  double          #  BVS 99th percentile
         bvs_95                 :  double          #  BVS 95th percentile
-        bvs_shuffles           :  blob@imgstore   #  Individual shuffles BVS 
+        bvs_shuffles           :  blob@imaging_store   #  Individual shuffles BVS 
         """
 
     @property
@@ -86,14 +86,14 @@ class ShuffledBVS(dj.Computed):
         st_params['speed_cutoff_low'], st_params['speed_cutoff_high'], time_offset = (SignalTrackingParams & key).fetch1(
                                                                     'speed_cutoff_low', 'speed_cutoff_high', 'time_offset')
 
-        spikes   = (FilteredSpikes.proj(signal_dataset='dataset_name', spikes='filtered_spikes')
-                    & key).fetch1('spikes')
+        events   = (FilteredEvents.proj(signal_dataset='dataset_name', events='filtered_events')
+                    & key).fetch1('events')
         tracking_ = (Tracking.OpenField * Tracking.proj(tracking_dataset='dataset_name')
                     & key).fetch1()
 
-        center_y, center_plane, proj_mean_img = ((Projection.proj('mean_image') * Cell.Rois).proj(
+        center_y, center_plane, proj_mean_img = ((Projection.proj('mean_image') * Cell.Rois * RoisCorr.proj('center_plane')).proj(
                     ..., signal_dataset='dataset_name') & key).fetch1('center_y', 'center_plane', 'mean_image')
-        num_planes, frame_rate_si, seconds_per_line, width_SI, height_SI = (Tif.SI & (Session & key)).fetch1(
+        num_planes, frame_rate_si, seconds_per_line, width_SI, height_SI = (Tif.SI & (Recording & key)).fetch1(
                     'num_scanning_depths', 'framerate', 'seconds_per_line', 'width_scanimage', 'height_scanimage')
 
         # Special case where the SI image shape is not the same with the projection image shape
@@ -114,13 +114,13 @@ class ShuffledBVS(dj.Computed):
         y_edges = occupancy_entry['y_edges'].copy()
 
         # Experiment Type
-        experiment_type   = (Session & key).fetch1('experiment_type')
+        equipment_type   = (Recording & key).fetch1('equipment_type')
 
         # Retrieve Sync
         # 1. Imaging
         sync_data_frames, sample_rate_sync, key['sync_dataset_frames_imaging'], key['sync_name_frames_imaging'] = \
-                                                (MetaSession.Setup * Setup.Sync * Sync \
-                                                & 'generic_name = "frames_imaging"' & key).fetch1(
+                                                (Sync \
+                                                & {'sync_name':'frames'} & key).fetch1(
                                                 'sync_data', 'sample_rate', 'dataset_name', 'sync_name')
 
         # 2. Tracking
@@ -129,14 +129,14 @@ class ShuffledBVS(dj.Computed):
         # -> 'generic_name = "Tracking2LED"' 
         tracking_type = (Dataset & 'dataset_name = "{}"'.format(key['tracking_dataset'])).fetch1('datasettype')
         if tracking_type == 'DLC_tracking':
-            tracking_generic = 'TrackingDLC'
+            tracking_generic = 'Tracking_DLC'
         elif 'Tracking2D_2LED' in tracking_type:
             tracking_generic = 'Tracking2LED'
         else:
             raise NotImplementedError(f'Tracking dataset type {tracking_type} not implemented')
 
-        sync_data_track = (MetaSession.Setup * Setup.Sync
-                            * Sync & f'generic_name = "{tracking_generic}"' & key).fetch1('sync_data')
+        sync_data_track = (Session.SystemConfig * SystemConfig.Sync * Sync 
+                           & f'sync_purpose = "{tracking_generic}"' & key).fetch1('sync_data')
 
         # Sanity checks
         # 1. Compare length of tracking data and tracking sync data
@@ -145,7 +145,7 @@ class ShuffledBVS(dj.Computed):
 
         if len(tracking_['x_pos']) != len(sync_data_track):
             raise IndexError('Mismatch between length of sync data and tracking data')
-        if len(spikes) != len(sync_data_frames):
+        if len(events) != len(sync_data_frames):
             raise IndexError('Mismatch between length of sync data and spiking data')
         if np.abs(sync_data_track[-1] - sync_data_frames[-1]) > np.mean(np.diff(sync_data_frames)):
             raise IndexError('There is more than one frame difference between the end of sync streams')
@@ -154,14 +154,14 @@ class ShuffledBVS(dj.Computed):
         seconds_per_plane =  1 / (frame_rate_si * num_planes) # from Tif.SI()
         # Why is this correct? Because frame_rate_si returns the "volume" rate. 
 
-        if '2Pmini' in experiment_type:
+        if '2Pmini' in equipment_type:
             # Careful! "samples" are floating point (real valued) timestamps for pre-synced setups since 
             # sample rate = 1. for those sync data
             seconds_to_cell  = center_plane * seconds_per_plane + center_y * seconds_per_line
             samples_to_cell  = seconds_to_cell * sample_rate_sync 
             samples_offset   = samples_to_cell + (time_offset * sample_rate_sync) # from 'MapParams'
         else:
-            raise NotImplementedError('Cell time finding not implemented for experiment type "{}""'.format(experiment_type))
+            raise NotImplementedError('Cell time finding not implemented for experiment type "{}""'.format(equipment_type))
 
 
         ######### CREATE SHUFFLING VECTOR ############################################################################
@@ -193,16 +193,16 @@ class ShuffledBVS(dj.Computed):
 
         ######### PREPARE SIGNAL AND SHUFFLES ########################################################################
 
-        # Only do this for spikes right now
-        signal_data   =  spikes
-        signal_idxs   =  np.argwhere(spikes > 0).squeeze()
+        # Only do this for events right now
+        signal_data   =  events
+        signal_idxs   =  np.argwhere(events > 0).squeeze()
 
         # Shuffled array
         shuffled_bvs = []
 
         ######### SHUFFLE ###########################################################################################
 
-        for shift in tqdm(shuffling_offsets):
+        for shift in shuffling_offsets: # tqdm(shuffling_offsets):
             rolled_sync_data_frames = np.roll(sync_data_frames, shift)
 
             # Look up signal tracking

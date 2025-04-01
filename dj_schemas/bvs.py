@@ -7,7 +7,7 @@ schema = dj.schema(dj.config['dj_imaging.database'])
 schema.spawn_missing_classes()
 
 # Load personal schema 
-borderscore_schema = dj.schema('user_horsto_borderscore')
+borderscore_schema = dj.schema('user_martipof_im')
 borderscore_schema.spawn_missing_classes()
 
 from bvs.detect_fields import detect_fields
@@ -33,36 +33,37 @@ class BVFieldParams(dj.Lookup):
 class BVField(dj.Computed):
     definition = """
     # Boundary vector score (BVS) fields
-    -> Ratemap
+    -> TuningMap
     -> BVFieldParams
     ---
-    no_fields  = NULL              : smallint        # Total number of detected fields
-    fields_map = NULL              : blob@imgstore   # Map of detected fields 
+    no_fields  = NULL              : smallint               # Total number of detected fields
+    fields_map = NULL              : blob@imaging_store     # Map of detected fields 
     """
     class Fields(dj.Part):
         definition = """
         # Field detection results
         -> master
-        field_no                   : int             # Field number
+        field_no                   : int                    # Field number
         ---
-        field_coords               : blob@imgstore   # Coordinates of all bins in the firing field
-        field_centroid_x           : double          # Field centroid x coordinate
-        field_centroid_y           : double          # Field centroid y coordinate
-        field_area                 : int             # Area in number of bins
-        field_bbox                 : blob@imgstore   # Field bounding box
+        field_coords               : blob@imaging_store     # Coordinates of all bins in the firing field
+        field_centroid_x           : double                 # Field centroid x coordinate
+        field_centroid_y           : double                 # Field centroid y coordinate
+        field_area                 : int                    # Area in number of bins
+        field_bbox                 : blob@imaging_store     # Field bounding box
         """
         
     @property
     def key_source(self):
-        return super().key_source  & 'bvfield_params_id = "A"' & 's_t_params_id = "A"'
-        # We just want a ratemap + do not care about field detection 
+        users_to_compute = ['martipof','nljong']       
+        return super().key_source * Recording.proj("username") & 'bvfield_params_id = "A"' & 's_t_params_id = "A"' & [{'username':user} for user in users_to_compute]    
+        # We just want a TuningMap + do not care about field detection 
     
     def make(self, key):
         params  =  (BVFieldParams & key).fetch1()
-        ratemap_entry = (Ratemap & key).fetch1()
+        TuningMap_entry = (TuningMap & key).fetch1()
         
-        # Process ratemap 
-        rm      = np.ma.array(ratemap_entry['ratemap'], mask = ratemap_entry['mask_rm'])
+        # Process TuningMap 
+        rm      = np.ma.array(TuningMap_entry['tuningmap'], mask = TuningMap_entry['mask_tm'])
         rm_nans = np.ma.filled(rm, fill_value=np.nan).astype(np.float64)
         
         key['fields_map'], remaining_fields = detect_fields(rm_nans, minBin=params['min_bin'], \
@@ -70,7 +71,7 @@ class BVField(dj.Computed):
                                                     show_plots=False, debug=False)
         key['no_fields'] = len(remaining_fields)
         
-        self.insert1(key)
+        self.insert1(key, ignore_extra_fields=True)
         
         # Fill "Fields" part table
         for no,field in enumerate(remaining_fields):
@@ -126,11 +127,11 @@ class BVScore(dj.Computed):
         # Score x (bars spanning X)
         -> master
         ---
-        score_x        :  double   # Maximum score for bars spanning x (horizontal bars)
-        bar_width      :  tinyint  # Barwidth at maximum 
-        ypos           :  smallint # Bar position at maximum (center of bar)
-        ypos_rel       :  float    # relative bar position at maximum (center of bar)
-        bar_map        :  blob@imgstore   # barMap (streak of ones) at maximum 
+        score_x        :  double            # Maximum score for bars spanning x (horizontal bars)
+        bar_width      :  tinyint           # Barwidth at maximum 
+        ypos           :  smallint          # Bar position at maximum (center of bar)
+        ypos_rel       :  float             # relative bar position at maximum (center of bar)
+        bar_map        :  blob@imaging_store     # barMap (streak of ones) at maximum 
         """
     class ScoreY(dj.Part):
         definition = """
@@ -141,7 +142,7 @@ class BVScore(dj.Computed):
         bar_width      :  tinyint  # Barwidth at maximum 
         xpos           :  smallint # Bar position at maximum (center of bar)
         xpos_rel       :  float    # relative bar position at maximum (center of bar)
-        bar_map        :  blob@imgstore   # barMap (streak of ones) at maximum 
+        bar_map        :  blob@imaging_store   # barMap (streak of ones) at maximum 
         """   
     
     @property
@@ -151,7 +152,7 @@ class BVScore(dj.Computed):
         
     def make(self, key):
         # Implement two methods for field detection 
-        # 1. opexebo (raw ratemap fieldmaps entry)
+        # 1. opexebo (raw TuningMap fieldmaps entry)
         # 2. bvfield 
         params = (BVScoreParams & key).fetch1()
         method = (BVScoreFieldMethod & key).fetch1('bv_field_dect_method')
@@ -160,7 +161,7 @@ class BVScore(dj.Computed):
         
         try:
             if method == 'opexebo':
-                fieldmap = (Ratemap & key).fetch1('fields_map')
+                fieldmap = (TuningMap & key).fetch1('fields_map')
                 fieldmap = fieldmap.copy()
                 fieldmap[fieldmap>0] = 1
             elif method == 'bvs':
@@ -180,6 +181,6 @@ class BVScore(dj.Computed):
         
         self.insert1(key)
         # Part tables
-        self.Score_X.insert1({**key,**bvs_x}, ignore_extra_fields=True)
-        self.Score_Y.insert1({**key,**bvs_y}, ignore_extra_fields=True)
+        self.ScoreX.insert1({**key,**bvs_x}, ignore_extra_fields=True)
+        self.ScoreY.insert1({**key,**bvs_y}, ignore_extra_fields=True)
            
